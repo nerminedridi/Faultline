@@ -1,0 +1,26 @@
+groups:
+  - name: shop
+    rules:
+      - alert: ServiceDown
+        expr: up{job="shop"} == 0
+        for: 30s
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.service }} is not responding to scrapes"
+
+      - alert: HighErrorRate
+        expr: |
+          sum by (service) (rate(http_requests_total{status=~"5.."}[1m]))
+            / sum by (service) (rate(http_requests_total[1m])) > 0.05
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.service }} 5xx rate is {{ $value | humanizePercentage }}"
+
+      - alert: HighLatency
+        expr: |
+          histogram_quantile(0.95, sum by (service, le) (rate(http_request_duration_seconds_bucket[1m]))) > 0.5
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.service }} p95 latency is {{ $value | humanizeDuration }}"

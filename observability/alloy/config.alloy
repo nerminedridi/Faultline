@@ -1,0 +1,35 @@
+// Ship the stdout logs of every incident-lab container to Loki,
+// labelled with the compose service name.
+
+discovery.docker "lab" {
+  host = "unix:///var/run/docker.sock"
+  // Chaos scenarios restart containers constantly; pick them up fast.
+  refresh_interval = "5s"
+
+  filter {
+    name   = "label"
+    values = ["com.docker.compose.project=incident-lab"]
+  }
+}
+
+discovery.relabel "lab" {
+  targets = []
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+}
+
+loki.source.docker "lab" {
+  host          = "unix:///var/run/docker.sock"
+  targets       = discovery.docker.lab.targets
+  relabel_rules = discovery.relabel.lab.rules
+  forward_to    = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

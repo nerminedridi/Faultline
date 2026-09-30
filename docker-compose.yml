@@ -1,0 +1,105 @@
+name: incident-lab
+
+x-app: &app
+  build: &build
+    context: ./services
+  environment: &app-env
+    INVENTORY_URL: http://inventory:8000
+    PAYMENTS_URL: http://payments:8000
+    ORDERS_URL: http://orders:8000
+
+services:
+  # ---------- the shop ----------
+  gateway:
+    <<: *app
+    build: { <<: *build, args: { SERVICE: gateway } }
+    ports: ["8080:8000"]
+    depends_on: [orders, inventory]
+
+  orders:
+    <<: *app
+    build: { <<: *build, args: { SERVICE: orders } }
+    environment:
+      <<: *app-env
+      DATABASE_URL: postgresql://shop:shop@postgres:5432/shop
+      DB_POOL_SIZE: "10"
+    depends_on:
+      postgres: { condition: service_healthy }
+      inventory: { condition: service_started }
+      payments: { condition: service_started }
+
+  inventory:
+    <<: *app
+    build: { <<: *build, args: { SERVICE: inventory } }
+
+  payments:
+    <<: *app
+    build: { <<: *build, args: { SERVICE: payments } }
+    environment:
+      <<: *app-env
+      DECLINE_RATE: "0.03"
+
+  loadgen:
+    <<: *app
+    build: { <<: *build, args: { SERVICE: loadgen } }
+    command: ["python", "-m", "app.main"]
+    environment:
+      GATEWAY_URL: http://gateway:8000
+      RPS: "5"
+    depends_on: [gateway]
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: shop
+      POSTGRES_PASSWORD: shop
+      POSTGRES_DB: shop
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shop -d shop"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # ---------- observability ----------
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --web.enable-lifecycle
+    volumes: [./observability/prometheus:/etc/prometheus:ro]
+    ports: ["9090:9090"]
+
+  loki:
+    image: grafana/loki:3.3.2
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    ports: ["3100:3100"]
+
+  alloy:
+    image: grafana/alloy:v1.5.1
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    volumes:
+      - ./observability/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on: [loki]
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    environment:
+      # Local lab only: no login screen.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/shop-overview.json
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3000:3000"]
+    depends_on: [prometheus, loki]
+
+volumes:
+  pgdata:
