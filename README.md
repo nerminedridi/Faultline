@@ -4,7 +4,7 @@
 
 An AI agent that investigates outages in a live microservice system and identifies the root cause, evaluated against faults injected on purpose, each with a known ground truth.
 
-> **Status:** M1 done: the lab (shop + observability) runs locally. Chaos engine, agent and eval scoreboard are next.
+> **Status:** M1 (the lab) and M2 (the chaos engine) are done. The agent and eval scoreboard are next.
 
 ## The lab
 
@@ -33,6 +33,7 @@ every service ──metrics──► Prometheus ──► alert rules
 - **Structured JSON logs** from every service, with a `request_id` propagated through the `X-Request-ID` header, so one customer request can be followed across all services in Loki.
 - **Prometheus metrics**: `http_requests_total`, `http_request_duration_seconds` (by route/status), and `downstream_errors_total` (by target and kind: timeout / connection / 5xx).
 - **Alert rules**: `ServiceDown`, `HighErrorRate` (>5% 5xx), `HighLatency` (p95 > 500 ms).
+- **Database visibility**: `db_pool_connections{state="in_use|waiting|max"}` from orders, and PostgreSQL logs any query stuck on a lock for over 1 s.
 
 ## Run it
 
@@ -55,3 +56,33 @@ curl -X POST localhost:8080/api/checkout -H "Content-Type: application/json" -d 
 ```
 
 Stop everything with `docker compose down` (add `-v` to also wipe the database).
+
+## The chaos engine
+
+Injects a fault into the running lab, records the ground truth (where the fault really lives, not where the alerts fire), then reverts it. Plain Python 3.10+, no dependencies; run it from the repo root while the lab is up.
+
+```bash
+python -m chaos list                          # the fault catalog
+python -m chaos inject payments-latency       # inject, wait 180 s, revert (-d to change; Ctrl-C ends early)
+python -m chaos inject db-lock --detach       # inject and return
+python -m chaos status                        # what is broken right now
+python -m chaos clear                         # revert everything
+python -m chaos runs                          # past runs and their root causes
+```
+
+| Fault | Root cause | What it looks like |
+|---|---|---|
+| `payments-latency` | payments / latency | charges take 1.5–2.5 s; latency alerts up the call chain, no errors |
+| `payments-errors` | payments / errors | half of charges fail with 503; errors cascade to orders and gateway |
+| `payments-declines` | payments / bad-config | decline rate 3% → 60%; **no alert fires** (402s aren't 5xx) |
+| `orders-db-pool-leak` | orders / resource-exhaustion | orders holds every pool connection; PoolTimeouts while Postgres is healthy |
+| `inventory-down` | inventory / crash | container stopped; connection errors downstream |
+| `inventory-hang` | inventory / hang | container paused; timeouts instead of connection errors |
+| `postgres-down` | postgres / crash | database stopped; Postgres isn't scraped, so no `ServiceDown` |
+| `db-lock` | postgres / lock-contention | a "nightly-report" session holds an exclusive lock on `orders` |
+
+Several faults deliberately share symptoms (three end in the same `PoolTimeout`), so the agent has to find the evidence that tells them apart rather than pattern-match the alert.
+
+**How faults are injected.** Infrastructure faults go through `docker compose` (stop, pause) or a rogue `psql` session. Application faults go through a hidden `/_chaos` endpoint every service mounts (`services/common/chaos.py`): it adds latency or errors to chosen routes, or triggers service-specific faults like the connection leak. That endpoint is excluded from metrics and request logs, and injected failures only log what the real failure would, so the ground truth can't be read off the telemetry. Every in-app fault also expires on its own, so a crashed controller can't leave the lab broken.
+
+**Ground truth.** Each run writes `chaos/runs/<run_id>.json` with the fault, its root cause (service + kind), the expected signals and the exact injection window. This is what the scoreboard will grade the agent against.

@@ -1,15 +1,18 @@
 """Orders: reserves stock, charges payment and stores orders in PostgreSQL."""
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
+from prometheus_client import Gauge
 from psycopg.rows import dict_row
-from psycopg_pool import AsyncConnectionPool
+from psycopg_pool import AsyncConnectionPool, PoolTimeout
 from pydantic import BaseModel, Field
 
+from common import chaos
 from common.observability import call_downstream, setup
 
 INVENTORY_URL = os.environ["INVENTORY_URL"]
@@ -21,10 +24,19 @@ pool = AsyncConnectionPool(
     min_size=2,
     max_size=int(os.getenv("DB_POOL_SIZE", "10")),
     timeout=2.0,
+    # Validate connections on checkout so the pool recovers by itself after a database restart.
+    check=AsyncConnectionPool.check_connection,
     open=False,
     kwargs={"row_factory": dict_row},
 )
 client = httpx.AsyncClient(timeout=3.0)
+
+POOL_STATS = Gauge("db_pool_connections", "Database pool connections, by state", ["state"])
+POOL_STATS.labels("max").set_function(lambda: pool.max_size)
+POOL_STATS.labels("in_use").set_function(
+    lambda: (s := pool.get_stats())["pool_size"] - s["pool_available"]
+)
+POOL_STATS.labels("waiting").set_function(lambda: pool.get_stats()["requests_waiting"])
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS orders (
@@ -69,6 +81,34 @@ async def release_stock(order: NewOrder) -> None:
         )
     except HTTPException:
         log.error("failed to release stock", sku=order.sku, qty=order.qty)
+
+
+# ---------- fault: a code path that checks out connections and never returns them ----------
+leaked: list = []
+leak_task: asyncio.Task | None = None
+
+
+async def _leak(count: float) -> None:
+    while len(leaked) < int(count):
+        try:
+            leaked.append(await pool.getconn())
+        except PoolTimeout:
+            pass  # competing with live traffic for the last connections; keep trying
+
+
+async def start_leak(count: float) -> None:
+    global leak_task
+    leak_task = asyncio.create_task(_leak(count))
+
+
+async def stop_leak() -> None:
+    if leak_task is not None:
+        leak_task.cancel()
+    while leaked:
+        await pool.putconn(leaked.pop())
+
+
+chaos.register("leak_db_connections", start_leak, stop_leak)
 
 
 @app.post("/orders")

@@ -19,6 +19,8 @@ from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from starlette.routing import Match
 
+from common import chaos
+
 request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="-")
 
 # The `service` label is added by Prometheus at scrape time, not here.
@@ -39,7 +41,7 @@ DOWNSTREAM_ERRORS = Counter(
     ["target", "kind"],
 )
 
-UNTRACKED_PATHS = {"/metrics", "/health"}
+UNTRACKED_PATHS = {"/metrics", "/health", chaos.CHAOS_PATH}
 
 
 class JsonFormatter(logging.Formatter):
@@ -90,6 +92,9 @@ def configure_logging(service: str) -> Log:
     logger.handlers = [handler]
     logger.setLevel(logging.INFO)
     logger.propagate = False
+    # Library warnings (e.g. the DB pool failing to reconnect) get the same JSON format.
+    logging.root.handlers = [handler]
+    logging.root.setLevel(logging.WARNING)
     return Log(logger)
 
 
@@ -104,8 +109,9 @@ def _route_template(app: FastAPI, scope) -> str:
 
 
 def setup(app: FastAPI, service: str) -> Log:
-    """Attach request logging, metrics, /metrics and /health to an app."""
+    """Attach request logging, metrics, /metrics, /health and fault injection to an app."""
     log = configure_logging(service)
+    chaos.mount(app)
 
     @app.middleware("http")
     async def observe(request: Request, call_next):
@@ -116,7 +122,13 @@ def setup(app: FastAPI, service: str) -> Log:
         route = _route_template(app, request.scope)
         start = time.perf_counter()
         try:
-            response = await call_next(request)
+            injected = await chaos.apply(route)
+            if injected:
+                status, message = injected
+                log.error(message, method=request.method, path=request.url.path)
+                response = JSONResponse({"error": message}, status_code=status)
+            else:
+                response = await call_next(request)
         except Exception:
             log.exception("unhandled error", method=request.method, path=request.url.path)
             response = JSONResponse({"error": "internal server error"}, status_code=500)

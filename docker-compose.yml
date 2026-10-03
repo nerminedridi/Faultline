@@ -50,6 +50,8 @@ services:
 
   postgres:
     image: postgres:16-alpine
+    # Log any query stuck waiting on a lock for more than 1 s, with the blocking process.
+    command: ["postgres", "-c", "log_lock_waits=on", "-c", "deadlock_timeout=1s"]
     environment:
       POSTGRES_USER: shop
       POSTGRES_PASSWORD: shop
