@@ -4,7 +4,7 @@
 
 An AI agent that investigates outages in a live microservice system and identifies the root cause, evaluated against faults injected on purpose, each with a known ground truth.
 
-> **Status:** M1 (the lab) and M2 (the chaos engine) are done. The agent and eval scoreboard are next.
+> **Status:** M1 (the lab), M2 (the chaos engine) and M3 (the agent) are done. The eval scoreboard is next.
 
 ## The lab
 
@@ -86,3 +86,29 @@ Several faults deliberately share symptoms (three end in the same `PoolTimeout`)
 **How faults are injected.** Infrastructure faults go through `docker compose` (stop, pause) or a rogue `psql` session. Application faults go through a hidden `/_chaos` endpoint every service mounts (`services/common/chaos.py`): it adds latency or errors to chosen routes, or triggers service-specific faults like the connection leak. That endpoint is excluded from metrics and request logs, and injected failures only log what the real failure would, so the ground truth can't be read off the telemetry. Every in-app fault also expires on its own, so a crashed controller can't leave the lab broken.
 
 **Ground truth.** Each run writes `chaos/runs/<run_id>.json` with the fault, its root cause (service + kind), the expected signals and the exact injection window. This is what the scoreboard will grade the agent against.
+
+## The agent
+
+An LLM investigator that gets paged, digs through the lab's telemetry and names the root cause. It sees only what an on-call engineer would see in Grafana: alerts, metrics and logs. No Docker access, no database shell, and never the chaos engine's ground truth.
+
+```bash
+cp .env.example .env                  # then add a free Gemini API key
+python -m agent investigate           # investigate whatever is wrong right now
+python -m agent investigate -c "customers say checkout is slow"
+python -m agent investigate --provider ollama   # local model instead
+```
+
+**Tools** (all read-only, via Prometheus and Loki):
+
+| Tool | What it gives the agent |
+|---|---|
+| `get_alerts` | firing and pending alerts |
+| `log_summary` | log lines grouped by service, level and message, so where the noise is jumps out |
+| `search_logs` | matching lines with all their fields and exception tails |
+| `trace_request` | one `request_id` across every service |
+| `query_metrics` | any PromQL, instant or as a compact time series |
+| `submit_diagnosis` | the structured answer: service, kind, summary, evidence, confidence |
+
+The system prompt describes the architecture and a general method (follow the failure down the dependency chain, confirm the mechanism, rule out lookalikes) but says nothing about the specific faults. Each investigation saves its full transcript, diagnosis and token usage to `agent/reports/`.
+
+**Free models only.** The default is Google's Gemini free tier (`gemini-3.8-flash`, pinned so scores stay comparable); the agent retries automatically when it hits the free tier's rate limits. Ollama is supported for running fully offline, but on a CPU-only laptop a local model takes minutes per step.
