@@ -154,17 +154,30 @@ def log_summary(service: str | None = None, last_minutes: int | None = None) -> 
     start = _since(last_minutes)
     seconds = max(1, int(end - start))
     # Structured (JSON) logs: counted by Loki itself, so this covers every line in the window.
+    # Counting the first and last third separately shows what changed during the window.
     fields = 'level="level", msg="msg", target="target", status="status"'
-    counts = _get(LOKI, "/loki/api/v1/query", time=int(end * 1e9), query=(
-        f"sum by (service, level, msg, target, status) "
-        f"(count_over_time({_selector(service)} | json {fields} | __error__=\"\" [{seconds}s]))"
-    ))["data"]["result"]
-    rows = sorted(counts, key=lambda r: -float(r["value"][1]))
-    lines = [f"Log lines since {_hms(start)}Z ({seconds / 60:.1f} min), grouped (count  service  level  message  [fields]):"]
-    for r in rows[:40]:
-        m = r["metric"]
+    selector = _selector(service) + r" |~ `^\{`"  # JSON lines only; plain text is grouped below
+
+    def counts(span: int, at: float) -> dict[tuple, float]:
+        result = _get(LOKI, "/loki/api/v1/query", time=int(at * 1e9), query=(
+            f"sum by (service, level, msg, target, status) "
+            f"(count_over_time({selector} | json {fields} | __error__=\"\" [{span}s]))"
+        ))["data"]["result"]
+        return {tuple(sorted(r["metric"].items())): float(r["value"][1]) for r in result}
+
+    total = counts(seconds, end)
+    third = max(1, seconds // 3)
+    early, late = counts(third, start + third), counts(third, end)
+    lines = [
+        f"Log lines since {_hms(start)}Z ({seconds / 60:.1f} min), grouped. 'per min' is the rate in the "
+        f"first third of the window -> the last third.",
+        "   count  per min (early -> late)  service  level  message  [fields]",
+    ]
+    for key, n in sorted(total.items(), key=lambda kv: -kv[1])[:40]:
+        m = dict(key)
+        trend = f"{early.get(key, 0) * 60 / third:7.1f} -> {late.get(key, 0) * 60 / third:<7.1f}"
         extra = " ".join(f"{k}={m[k]}" for k in ("target", "status") if m.get(k))
-        lines.append(f"{int(float(r['value'][1])):>6}  {m.get('service')}  {m.get('level')}  {m.get('msg')!r}  {extra}")
+        lines.append(f"{int(n):>8}  {trend}  {m.get('service')}  {m.get('level')}  {m.get('msg')!r}  {extra}")
 
     # Plain-text logs (postgres): sampled and grouped here, with numbers masked.
     raw = _get(LOKI, "/loki/api/v1/query_range", query=f'{_selector(service)} !~ "^\\\\{{"',
@@ -173,6 +186,8 @@ def log_summary(service: str | None = None, last_minutes: int | None = None) -> 
     for stream in raw:
         for _, line in stream["values"]:
             text = re.sub(r"^\S+ \S+ \S+ \[\d+\] ", "", line)  # drop postgres' timestamp and pid prefix
+            if not text.strip():
+                continue
             plain[(stream["stream"].get("service"), re.sub(r"\d+(\.\d+)?", "N", text)[:120])] += 1
     if plain:
         lines.append("Plain-text log lines (numbers masked as N):")
@@ -287,12 +302,16 @@ DECLARATIONS = [
                 "summary": {"type": "string", "description": "One or two sentences: what is wrong and why."},
                 "evidence": {"type": "array", "items": {"type": "string"},
                              "description": "The specific observations that support it."},
+                "causal_chain": {"type": "array", "items": {"type": "string"},
+                                 "description": "How the failure travels, from the originating fault to what "
+                                                "customers see, one 'component: what happens' step each. "
+                                                "The first step's component is the root-cause service."},
                 "ruled_out": {"type": "array", "items": {"type": "string"},
                               "description": "Other root causes that would produce the same symptoms, "
                                              "each with the evidence that rules it out."},
                 "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
             },
-            "required": ["service", "kind", "summary", "evidence", "ruled_out", "confidence"],
+            "required": ["service", "kind", "summary", "causal_chain", "evidence", "ruled_out", "confidence"],
         },
     },
 ]

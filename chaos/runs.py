@@ -41,7 +41,7 @@ def start(fault: Fault, duration: float) -> dict:
 
 def save(run: dict) -> None:
     RUNS_DIR.mkdir(exist_ok=True)
-    _path(run["run_id"]).write_text(json.dumps(run, indent=2) + "\n", encoding="utf-8")
+    _path(run["run_id"]).write_text(json.dumps(run, indent=2) + "\n", encoding="utf-8", newline="\n")
 
 
 def finish(run: dict, ended_by: str) -> None:

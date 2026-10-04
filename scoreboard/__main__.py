@@ -68,7 +68,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         answer = f"{d['service']} / {d['kind']} ({d['confidence']})" if d else "no diagnosis"
         print(f"  -> {answer}: {verdict}")
         result["trials"].append(trial)
-        path.write_text(json.dumps(result, indent=2, default=str) + "\n", encoding="utf-8")
+        path.write_text(json.dumps(result, indent=2, default=str) + "\n", encoding="utf-8", newline="\n")
 
     print()
     print_table([result])

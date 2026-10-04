@@ -59,7 +59,7 @@ def cmd_investigate(args: argparse.Namespace) -> int:
 
     REPORTS_DIR.mkdir(exist_ok=True)
     path = REPORTS_DIR / f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{report['provider']}.json"
-    path.write_text(dumps(report) + "\n", encoding="utf-8")
+    path.write_text(dumps(report) + "\n", encoding="utf-8", newline="\n")
 
     d = report["diagnosis"]
     print()
@@ -68,6 +68,7 @@ def cmd_investigate(args: argparse.Namespace) -> int:
     else:
         print(f"Root cause: {d['service']} / {d['kind']}  (confidence: {d.get('confidence', '?')})")
         print(f"  {d['summary']}")
+        print("  chain: " + "  ->  ".join(d.get("causal_chain", [])))
         for item in d.get("evidence", []):
             print(f"  - {item}")
         for item in d.get("ruled_out", []):

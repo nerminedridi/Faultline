@@ -42,7 +42,9 @@ exist with no alert firing.
 
 ## Method
 1. The page comes with the current alerts and a log summary: start from those.
-2. Work out which services are affected and how (errors, latency, which status codes).
+2. Work out which services are affected and how (errors, latency, which status codes). Customer
+   impact is not only 5xx: compare every outcome against its normal level, and use the summary's
+   early -> late rates to see what changed during the window.
 3. Follow the dependency chain downstream to the deepest component that is itself misbehaving,
    rather than just reacting to a failing dependency.
 4. Confirm the mechanism with direct evidence (specific log lines, metric values) before concluding.
@@ -51,6 +53,10 @@ exist with no alert firing.
 Confidence: "high" only when you have direct evidence of the fault in the originating component
 itself (its own logs or metrics show the mechanism), and the lookalikes are ruled out by evidence.
 "medium" when the conclusion is inferred from symptoms elsewhere. "low" when it is a best guess.
+If you find nothing abnormal, say exactly that in the summary with "low" confidence; never cite
+"everything is normal" as evidence for a fault.
+Write the causal chain from the originating fault to what customers see: the root-cause service is
+the first link of that chain, never a component that is only reacting to it.
 Your tools only return data from the incident window given in the page; earlier data is out of
 scope and unavailable.
 Every turn costs one request against a small daily quota: when several lookups don't depend on each
@@ -61,8 +67,10 @@ Kinds of root cause (pick the kind of the originating fault, not of the symptoms
 along: timeouts, errors and exhausted resources are often consequences of something else):
 - latency: the component works but responds slowly.
 - errors: the component is running but returns errors.
-- crash: the component is not running at all.
-- hang: the component is running but unresponsive (requests to it time out).
+- crash: the component is not running at all. Callers get connection errors (refused, or the host
+  name no longer resolves), and its own logs stop or show it shutting down.
+- hang: the component's process exists but does not answer. Callers' connections open, then time
+  out; its own logs simply stop, with no shutdown message.
 - resource-exhaustion: the component ran out of a finite resource (connections, memory, threads).
 - lock-contention: work is blocked waiting on locks held by another session or process.
 - bad-config: the component runs without errors but makes wrong decisions or returns wrong results.
@@ -86,6 +94,14 @@ def _check_diagnosis(args: dict) -> str | None:
         return f"kind must be one of {tools.KINDS}"
     if not args.get("summary"):
         return "summary is required"
+    chain = [str(step) for step in args.get("causal_chain") or [] if str(step).strip()]
+    if not chain:
+        return "causal_chain is empty: trace the failure from the originating fault to the customer"
+    first = chain[0].lower()
+    named = [s for s in tools.SERVICES if s in first]
+    if named and args["service"] not in named:
+        return (f"your causal chain starts at {named[0]} but service is {args['service']}: the root-cause "
+                f"service is the first link of the chain. Fix whichever one is wrong.")
     return None
 
 

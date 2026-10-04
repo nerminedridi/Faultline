@@ -7,6 +7,7 @@ from agent.llm import Reply, ToolCall
 
 GOOD = {
     "service": "payments", "kind": "errors", "summary": "payments returns 503",
+    "causal_chain": ["payments: charges fail with 503", "orders: checkout returns 502"],
     "evidence": ["payments logs 503"], "ruled_out": ["inventory: healthy"], "confidence": "high",
 }
 
@@ -48,6 +49,13 @@ class InvestigatorTest(unittest.TestCase):
         self.assertEqual(report["diagnosis"]["ruled_out"], GOOD["ruled_out"])
         rejection = report["transcript"][2]["results"][0]["result"]
         self.assertIn("ruled_out is empty", rejection)
+
+    def test_chain_that_starts_elsewhere_is_sent_back(self):
+        symptom = {**GOOD, "service": "orders"}  # blames the component that is only reacting
+        llm = ScriptedLLM(call("submit_diagnosis", **symptom), call("submit_diagnosis", **GOOD))
+        report = investigate(llm)
+        self.assertEqual(report["diagnosis"]["service"], "payments")
+        self.assertIn("chain starts at payments", report["transcript"][2]["results"][0]["result"])
 
     def test_unknown_kind_is_sent_back(self):
         llm = ScriptedLLM(call("submit_diagnosis", **{**GOOD, "kind": "gremlins"}),
