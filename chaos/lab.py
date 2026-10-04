@@ -64,7 +64,10 @@ def _psql(sql: str, *, detach: bool = False, app_name: str = "chaos-admin") -> s
 def lock_table(table: str, duration: float) -> None:
     # Runs detached inside the postgres container, so the lock outlives this process
     # and releases itself when the sleep ends.
+    # Ending this session with pg_terminate_backend would make Postgres log its full SQL,
+    # an obviously artificial pg_sleep; the setting keeps the statement out of the logs.
     _psql(
+        "SET log_min_error_statement = panic; "
         f"BEGIN; LOCK TABLE {table} IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep({duration:.0f}); COMMIT;",
         detach=True,
         app_name=LOCK_APP_NAME,

@@ -22,6 +22,39 @@ SERVICES = ["gateway", "orders", "inventory", "payments", "postgres"]
 # Shop containers only: the observability stack's own logs are noise for the agent.
 SHOP = '{service=~"gateway|orders|inventory|payments|postgres|loadgen"}'
 MAX_OUTPUT = 6000  # characters per tool result
+
+# Every tool only sees data from the incident window: [window_start, now]. Looking earlier
+# would mix in whatever happened before the incident (including earlier test faults).
+window_start = time.time() - 600
+
+
+def open_window(start: float) -> None:
+    global window_start
+    window_start = start
+
+
+def _since(last_minutes: int | None) -> float:
+    """Start of the requested lookback, never earlier than the incident window."""
+    if last_minutes is None:
+        return window_start
+    return max(window_start, time.time() - last_minutes * 60)
+
+
+_DURATION = re.compile(r"\[(\d+)([smhd])(?::[^\]]*)?\]")
+_UNIT = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+
+
+def _check_promql(promql: str) -> None:
+    if re.search(r"\boffset\b", promql):
+        raise ToolError("offset is not available: queries only see the incident window")
+    allowed = max(30, int(time.time() - window_start))  # rate() needs a few 5 s scrapes
+    for amount, unit in _DURATION.findall(promql):
+        if int(amount) * _UNIT[unit] > allowed:
+            raise ToolError(
+                f"range [{amount}{unit}] reaches before the incident window; use at most [{allowed}s]"
+            )
+
+
 KINDS = ["latency", "errors", "crash", "hang", "resource-exhaustion", "lock-contention", "bad-config"]
 
 
@@ -87,8 +120,16 @@ def get_alerts() -> str:
     return "\n".join(lines)
 
 
-def query_metrics(promql: str, range_minutes: int = 0) -> str:
-    if range_minutes <= 0:
+def earliest_alert() -> float | None:
+    """When the oldest firing or pending alert became active (epoch seconds)."""
+    alerts = _get(PROMETHEUS, "/api/v1/alerts")["data"]["alerts"]
+    times = [datetime.fromisoformat(a["activeAt"].replace("Z", "+00:00")).timestamp() for a in alerts]
+    return min(times) if times else None
+
+
+def query_metrics(promql: str, over_time: bool = False) -> str:
+    _check_promql(promql)
+    if not over_time:
         result = _get(PROMETHEUS, "/api/v1/query", query=promql)["data"]["result"]
         if not result:
             return "No data (empty result)."
@@ -97,9 +138,9 @@ def query_metrics(promql: str, range_minutes: int = 0) -> str:
         return _clip(json.dumps(result))
 
     end = time.time()
-    step = max(15, range_minutes * 60 // 12)
+    step = max(15, int(end - window_start) // 12)
     data = _get(PROMETHEUS, "/api/v1/query_range", query=promql,
-                start=end - range_minutes * 60, end=end, step=step)["data"]["result"]
+                start=window_start, end=end, step=step)["data"]["result"]
     if not data:
         return "No data (empty result)."
     lines = [f"{len(data)} series, one value every {step} s, oldest -> newest (ends {_hms(end)}Z):"]
@@ -108,16 +149,18 @@ def query_metrics(promql: str, range_minutes: int = 0) -> str:
     return _clip("\n".join(lines))
 
 
-def log_summary(minutes: int = 10, service: str | None = None) -> str:
+def log_summary(service: str | None = None, last_minutes: int | None = None) -> str:
     end = time.time()
+    start = _since(last_minutes)
+    seconds = max(1, int(end - start))
     # Structured (JSON) logs: counted by Loki itself, so this covers every line in the window.
     fields = 'level="level", msg="msg", target="target", status="status"'
     counts = _get(LOKI, "/loki/api/v1/query", time=int(end * 1e9), query=(
         f"sum by (service, level, msg, target, status) "
-        f"(count_over_time({_selector(service)} | json {fields} | __error__=\"\" [{minutes}m]))"
+        f"(count_over_time({_selector(service)} | json {fields} | __error__=\"\" [{seconds}s]))"
     ))["data"]["result"]
     rows = sorted(counts, key=lambda r: -float(r["value"][1]))
-    lines = [f"Log lines in the last {minutes} min, grouped (count  service  level  message  [fields]):"]
+    lines = [f"Log lines since {_hms(start)}Z ({seconds / 60:.1f} min), grouped (count  service  level  message  [fields]):"]
     for r in rows[:40]:
         m = r["metric"]
         extra = " ".join(f"{k}={m[k]}" for k in ("target", "status") if m.get(k))
@@ -125,7 +168,7 @@ def log_summary(minutes: int = 10, service: str | None = None) -> str:
 
     # Plain-text logs (postgres): sampled and grouped here, with numbers masked.
     raw = _get(LOKI, "/loki/api/v1/query_range", query=f'{_selector(service)} !~ "^\\\\{{"',
-               start=int((end - minutes * 60) * 1e9), end=int(end * 1e9), limit=2000)["data"]["result"]
+               start=int(start * 1e9), end=int(end * 1e9), limit=2000)["data"]["result"]
     plain = Counter()
     for stream in raw:
         for _, line in stream["values"]:
@@ -152,7 +195,7 @@ def _format_line(service: str, ts_ns: str, line: str) -> str:
 
 
 def search_logs(service: str | None = None, contains: str | None = None, level: str | None = None,
-                minutes: int = 10, limit: int = 30) -> str:
+                last_minutes: int | None = None, limit: int = 30) -> str:
     query = _selector(service)
     if contains:
         query += f" |= {_logql_string(contains)}"
@@ -160,7 +203,7 @@ def search_logs(service: str | None = None, contains: str | None = None, level: 
         query += " |= " + _logql_string('"level": "%s"' % level)
     end = time.time()
     streams = _get(LOKI, "/loki/api/v1/query_range", query=query, direction="backward",
-                   start=int((end - minutes * 60) * 1e9), end=int(end * 1e9), limit=min(limit, 100))["data"]["result"]
+                   start=int(_since(last_minutes) * 1e9), end=int(end * 1e9), limit=min(limit, 100))["data"]["result"]
     entries = sorted(
         (ts, s["stream"].get("service", "?"), line) for s in streams for ts, line in s["values"]
     )
@@ -173,12 +216,13 @@ def search_logs(service: str | None = None, contains: str | None = None, level: 
 def trace_request(request_id: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9-]{4,64}", request_id):
         raise ToolError("request_id should look like 'a1b2c3d4e5f6'")
-    return search_logs(contains=request_id, minutes=60, limit=100)
+    return search_logs(contains=request_id, limit=100)
 
 
 # ---------- declarations, in the JSON-schema subset both Gemini and Ollama accept ----------
 
-_minutes = {"type": "integer", "description": "How far back to look, in minutes (default 10)."}
+_minutes = {"type": "integer",
+            "description": "Only the last N minutes (default: the whole incident window, which is the limit)."}
 _service = {"type": "string", "enum": SERVICES + ["loadgen"], "description": "Limit to one service (default: all)."}
 
 DECLARATIONS = [
@@ -191,7 +235,7 @@ DECLARATIONS = [
         "name": "log_summary",
         "description": "Counts of log lines grouped by service, level and message over a time window. "
                        "The fastest way to see what is being logged, and where.",
-        "parameters": {"type": "object", "properties": {"minutes": _minutes, "service": _service}},
+        "parameters": {"type": "object", "properties": {"service": _service, "last_minutes": _minutes}},
     },
     {
         "name": "search_logs",
@@ -203,7 +247,7 @@ DECLARATIONS = [
                 "contains": {"type": "string", "description": "Case-sensitive substring the line must contain."},
                 "level": {"type": "string", "enum": ["info", "warning", "error"],
                           "description": "Only structured lines at this level (plain-text lines are excluded)."},
-                "minutes": _minutes,
+                "last_minutes": _minutes,
                 "limit": {"type": "integer", "description": "Max lines, up to 100 (default 30)."},
             },
         },
@@ -219,13 +263,14 @@ DECLARATIONS = [
     },
     {
         "name": "query_metrics",
-        "description": "Run a PromQL query. With range_minutes=0 returns current values; otherwise a "
-                       "time series of about 12 points over that many minutes.",
+        "description": "Run a PromQL query. Returns current values, or with over_time=true a time series "
+                       "of about 12 points across the incident window. Range selectors like [1m] must fit "
+                       "inside the window; offset is not available.",
         "parameters": {
             "type": "object",
             "properties": {
                 "promql": {"type": "string"},
-                "range_minutes": {"type": "integer", "description": "0 for an instant query (default)."},
+                "over_time": {"type": "boolean", "description": "Time series over the window (default false)."},
             },
             "required": ["promql"],
         },
@@ -242,9 +287,12 @@ DECLARATIONS = [
                 "summary": {"type": "string", "description": "One or two sentences: what is wrong and why."},
                 "evidence": {"type": "array", "items": {"type": "string"},
                              "description": "The specific observations that support it."},
+                "ruled_out": {"type": "array", "items": {"type": "string"},
+                              "description": "Other root causes that would produce the same symptoms, "
+                                             "each with the evidence that rules it out."},
                 "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
             },
-            "required": ["service", "kind", "summary", "evidence", "confidence"],
+            "required": ["service", "kind", "summary", "evidence", "ruled_out", "confidence"],
         },
     },
 ]

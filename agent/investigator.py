@@ -41,16 +41,24 @@ Alert rules: ServiceDown, HighErrorRate (>5% 5xx), HighLatency (p95 > 500 ms). A
 exist with no alert firing.
 
 ## Method
-1. Get the big picture: alerts, and a log summary of the recent window.
+1. The page comes with the current alerts and a log summary: start from those.
 2. Work out which services are affected and how (errors, latency, which status codes).
 3. Follow the dependency chain downstream to the deepest component that is itself misbehaving,
    rather than just reacting to a failing dependency.
 4. Confirm the mechanism with direct evidence (specific log lines, metric values) before concluding.
-   Rule out the alternatives that would produce the same symptoms.
-You have a limited number of tool calls, so be purposeful. When the evidence supports a conclusion,
-call submit_diagnosis.
+5. Before submitting, name the other root causes that would produce the same symptoms, and check
+   the evidence that rules each one out. If you have not checked it, check it first.
+Confidence: "high" only when you have direct evidence of the fault in the originating component
+itself (its own logs or metrics show the mechanism), and the lookalikes are ruled out by evidence.
+"medium" when the conclusion is inferred from symptoms elsewhere. "low" when it is a best guess.
+Your tools only return data from the incident window given in the page; earlier data is out of
+scope and unavailable.
+Every turn costs one request against a small daily quota: when several lookups don't depend on each
+other, request them together in the same turn. Be purposeful; when the evidence supports a
+conclusion, call submit_diagnosis.
 
-Kinds of root cause:
+Kinds of root cause (pick the kind of the originating fault, not of the symptoms it causes further
+along: timeouts, errors and exhausted resources are often consequences of something else):
 - latency: the component works but responds slowly.
 - errors: the component is running but returns errors.
 - crash: the component is not running at all.
@@ -69,6 +77,9 @@ def _brief(args: dict) -> str:
 
 
 def _check_diagnosis(args: dict) -> str | None:
+    if not [r for r in args.get("ruled_out") or [] if str(r).strip()]:
+        return ("ruled_out is empty: name at least one other root cause that would produce the same "
+                "symptoms and the evidence that rules it out (check it first if you have not)")
     if args.get("service") not in tools.SERVICES:
         return f"service must be one of {tools.SERVICES}"
     if args.get("kind") not in tools.KINDS:
@@ -78,11 +89,18 @@ def _check_diagnosis(args: dict) -> str | None:
     return None
 
 
-def investigate(llm, complaint: str, minutes: int = 10, max_steps: int = 15, echo=print) -> dict:
+def investigate(llm, complaint: str, window_start: float, max_steps: int = 15, echo=print) -> dict:
+    """Investigate the incident that began around window_start (epoch seconds) and is ongoing."""
     started = datetime.now(timezone.utc)
+    since = datetime.fromtimestamp(window_start, timezone.utc)
+    tools.open_window(window_start)
+    # Like a real page, it arrives with context: saves the model two requests fetching it.
     opening = (
         f"Page received at {started:%Y-%m-%d %H:%M:%S} UTC: {complaint}\n"
-        f"Investigate what is happening now (look at roughly the last {minutes} minutes) and find the root cause."
+        f"Incident window: since {since:%H:%M:%S} UTC ({(started - since).total_seconds() / 60:.1f} min). "
+        f"Find the root cause of what is happening now.\n\n"
+        f"## Current alerts\n{tools.run('get_alerts', {})}\n\n"
+        f"## {tools.run('log_summary', {})}"
     )
     history: list[dict] = [{"role": "user", "text": opening}]
     usage = {"input_tokens": 0, "output_tokens": 0, "llm_calls": 0}
@@ -136,7 +154,7 @@ def investigate(llm, complaint: str, minutes: int = 10, max_steps: int = 15, ech
         "started_at": started.isoformat(timespec="seconds"),
         "duration_s": round(time.monotonic() - t0, 1),
         "complaint": complaint,
-        "window_minutes": minutes,
+        "window_start": since.isoformat(timespec="seconds"),
         "tool_calls": tool_calls,
         "usage": usage,
         "diagnosis": diagnosis,
