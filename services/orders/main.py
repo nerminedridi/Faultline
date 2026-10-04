@@ -122,12 +122,16 @@ async def create_order(order: NewOrder):
         return JSONResponse({"error": "inventory error"}, status_code=502)
 
     amount = round(reserved.json()["unit_price"] * order.qty, 2)
-    async with pool.connection() as conn:
-        cur = await conn.execute(
-            "INSERT INTO orders (sku, qty, amount, status) VALUES (%s, %s, %s, 'pending') RETURNING id",
-            (order.sku, order.qty, amount),
-        )
-        order_id = (await cur.fetchone())["id"]
+    try:
+        async with pool.connection() as conn:
+            cur = await conn.execute(
+                "INSERT INTO orders (sku, qty, amount, status) VALUES (%s, %s, %s, 'pending') RETURNING id",
+                (order.sku, order.qty, amount),
+            )
+            order_id = (await cur.fetchone())["id"]
+    except Exception:
+        await release_stock(order)  # the order was never stored: don't keep its stock reserved
+        raise
 
     try:
         paid = await call_downstream(

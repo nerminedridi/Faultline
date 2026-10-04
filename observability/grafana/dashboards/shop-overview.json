@@ -1,7 +1,7 @@
 {
   "uid": "shop-overview",
   "title": "Shop Overview",
-  "tags": ["incident-lab"],
+  "tags": ["faultline"],
   "timezone": "browser",
   "schemaVersion": 39,
   "refresh": "5s",

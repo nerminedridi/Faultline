@@ -1,4 +1,4 @@
-name: incident-lab
+name: faultline
 
 x-app: &app
   build: &build

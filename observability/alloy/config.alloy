@@ -1,4 +1,4 @@
-// Ship the stdout logs of every incident-lab container to Loki,
+// Ship the stdout logs of every faultline container to Loki,
 // labelled with the compose service name.
 
 discovery.docker "lab" {
@@ -8,7 +8,7 @@ discovery.docker "lab" {
 
   filter {
     name   = "label"
-    values = ["com.docker.compose.project=incident-lab"]
+    values = ["com.docker.compose.project=faultline"]
   }
 }
 
