@@ -4,7 +4,7 @@
 
 An AI agent that investigates outages in a live microservice system and identifies the root cause, evaluated against faults injected on purpose, each with a known ground truth.
 
-> **Status:** all four milestones are built: the lab, the chaos engine, the agent and the scoreboard. Next: tuning the agent against the scoreboard.
+> **Status:** all four milestones are built and measured: the agent finds the full root cause in 7/8 dev faults and 2/3 held-out faults (see [results](#results-so-far)).
 
 ## The lab
 
@@ -134,6 +134,22 @@ python -m scoreboard report                      # table of all saved runs
 Each trial waits until the lab is quiet (no alerts, no 5xx), injects the fault, lets symptoms build for 90 s, investigates with the window opening 60 s before the injection, then reverts. Results, with full transcripts, are saved to `scoreboard/results/` after every trial, so an interrupted run keeps what it finished.
 
 **Dev and holdout.** The 8 dev faults are what the agent is tuned against. The 3 held-out faults reuse known failure kinds in new places and are never looked at while tuning: they're only run at the end, so the final score measures whether the agent generalises rather than whether its prompt was fitted to the catalog.
+
+### Results so far
+
+Model: `gemini-3.5-flash-lite` (free tier), one trial per fault, ~2–15 model calls per investigation.
+
+| | Service right | Fully right (service + kind) |
+|---|---|---|
+| Dev faults, baseline agent | 6/8 | 5/8 (62%) |
+| Dev faults, tuned agent | 7/8 | **7/8 (88%)** |
+| **Held-out faults** (never seen while tuning) | **3/3** | **2/3** |
+
+Tuning fixed the baseline's hang-vs-crash and symptom-vs-cause mistakes. Remaining misses:
+- `payments-declines`: the decline rate jumps 2.4 → 91 per minute in the agent's own log summary, yet it reports "nothing abnormal" (with low confidence). Info-level spikes with no alert are its blind spot.
+- `postgres-hang` (held out): right service, but called resource-exhaustion rather than a hang.
+
+One trial per fault is a small sample; repeated runs (`--repeats`) and a comparison with a stronger model are next.
 
 ## Tests
 
