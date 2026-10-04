@@ -4,7 +4,7 @@
 
 An AI agent that investigates outages in a live microservice system and identifies the root cause, evaluated against faults injected on purpose, each with a known ground truth.
 
-> **Status:** M1 (the lab), M2 (the chaos engine) and M3 (the agent) are done. The eval scoreboard is next.
+> **Status:** all four milestones are built: the lab, the chaos engine, the agent and the scoreboard. Next: tuning the agent against the scoreboard.
 
 ## The lab
 
@@ -80,6 +80,9 @@ python -m chaos runs                          # past runs and their root causes
 | `inventory-hang` | inventory / hang | container paused; timeouts instead of connection errors |
 | `postgres-down` | postgres / crash | database stopped; Postgres isn't scraped, so no `ServiceDown` |
 | `db-lock` | postgres / lock-contention | a "nightly-report" session holds an exclusive lock on `orders` |
+| `inventory-latency` | inventory / latency | *held out*: catalog and reservations take 1.2–2 s |
+| `payments-down` | payments / crash | *held out*: payments container stopped |
+| `postgres-hang` | postgres / hang | *held out*: database frozen, logs nothing at all |
 
 Several faults deliberately share symptoms (three end in the same `PoolTimeout`), so the agent has to find the evidence that tells them apart rather than pattern-match the alert.
 
@@ -93,7 +96,7 @@ An LLM investigator that gets paged, digs through the lab's telemetry and names 
 
 ```bash
 cp .env.example .env                  # then add a free Gemini API key
-python -m agent investigate           # investigate whatever is wrong right now
+python -m agent investigate           # investigate the current incident
 python -m agent investigate -c "customers say checkout is slow"
 python -m agent investigate --provider ollama   # local model instead
 ```
@@ -109,6 +112,33 @@ python -m agent investigate --provider ollama   # local model instead
 | `query_metrics` | any PromQL, instant or as a compact time series |
 | `submit_diagnosis` | the structured answer: service, kind, summary, evidence, confidence |
 
+**Incident window.** Every tool only returns data from the incident window, which by default opens a minute before the earliest active alert (`--since HH:MM` to set it). The agent can narrow it but never look earlier, not even through a PromQL `[10m]` range or `offset`, so leftovers from an earlier incident can't mislead it.
+
+**Showing its work.** A diagnosis must list the lookalike explanations the agent ruled out, with the evidence for each; one without is sent back. "High" confidence is reserved for direct evidence in the component at fault.
+
 The system prompt describes the architecture and a general method (follow the failure down the dependency chain, confirm the mechanism, rule out lookalikes) but says nothing about the specific faults. Each investigation saves its full transcript, diagnosis and token usage to `agent/reports/`.
 
 **Free models only.** The default is Google's Gemini free tier (`gemini-3.8-flash`, pinned so scores stay comparable); the agent retries automatically when it hits the free tier's rate limits. Ollama is supported for running fully offline, but on a CPU-only laptop a local model takes minutes per step.
+
+## The scoreboard
+
+Runs the agent against the faults and grades every diagnosis against the ground truth: is the **service** right, and is the **kind** of failure right too.
+
+```bash
+python -m scoreboard run                         # every dev fault once (~5 min per fault)
+python -m scoreboard run --faults db-lock --repeats 3
+python -m scoreboard run --split holdout         # final evaluation only
+python -m scoreboard report                      # table of all saved runs
+```
+
+Each trial waits until the lab is quiet (no alerts, no 5xx), injects the fault, lets symptoms build for 90 s, investigates with the window opening 60 s before the injection, then reverts. Results, with full transcripts, are saved to `scoreboard/results/` after every trial, so an interrupted run keeps what it finished.
+
+**Dev and holdout.** The 8 dev faults are what the agent is tuned against. The 3 held-out faults reuse known failure kinds in new places and are never looked at while tuning: they're only run at the end, so the final score measures whether the agent generalises rather than whether its prompt was fitted to the catalog.
+
+## Tests
+
+```bash
+python -m unittest discover -s tests -t .
+```
+
+Fast, offline unit tests (standard library only) for the incident-window guards, log formatting, the investigation loop (with a scripted fake model), quota handling and scoring.
