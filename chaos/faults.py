@@ -25,6 +25,8 @@ class Fault:
     # What should show up in the telemetry; documents the scenario, not used for scoring.
     expected_signals: tuple[str, ...]
     inject: Callable[[float], None]  # takes the duration in seconds
+    # Held out from agent tuning: only run in a final, honest scoreboard pass.
+    holdout: bool = False
 
 
 def _in_app(service: str, **spec) -> Callable[[float], None]:
@@ -148,6 +150,42 @@ FAULTS: dict[str, Fault] = {
                 "every service, and postgres, is up",
             ),
             inject=lambda duration: lab.lock_table("orders", duration),
+        ),
+        # ---------- held out: never used while tuning the agent ----------
+        Fault(
+            id="inventory-latency",
+            summary="Inventory takes 1.2-2 s to answer catalog and reservation calls",
+            root_cause=RootCause("inventory", "latency", "The inventory service is slow to respond."),
+            expected_signals=(
+                "HighLatency on inventory, orders and gateway",
+                "browsing and checkout both slow; no rise in 5xx",
+            ),
+            inject=_in_app("inventory", latency_ms=(1200, 2000), routes=["/products", "/reserve"]),
+            holdout=True,
+        ),
+        Fault(
+            id="payments-down",
+            summary="The payments container is stopped",
+            root_cause=RootCause("payments", "crash", "The payments service is down."),
+            expected_signals=(
+                "ServiceDown for payments",
+                "orders times out calling payments, fails checkouts and releases stock",
+                "browsing and order tracking still work",
+            ),
+            inject=lambda duration: lab.stop("payments"),
+            holdout=True,
+        ),
+        Fault(
+            id="postgres-hang",
+            summary="The PostgreSQL process is frozen: connections open, no queries answered",
+            root_cause=RootCause("postgres", "hang", "The orders database is hung and answers nothing."),
+            expected_signals=(
+                "no ServiceDown: postgres is not scraped",
+                "orders requests hang, then the pool runs dry (PoolTimeout); gateway 504s",
+                "postgres logs nothing at all: no shutdown, no lock waits",
+            ),
+            inject=lambda duration: lab.pause("postgres"),
+            holdout=True,
         ),
     ]
 }

@@ -12,7 +12,7 @@ import argparse
 import sys
 import time
 
-from chaos import lab, runs
+from chaos import engine, lab, runs
 from chaos.faults import FAULTS
 
 
@@ -40,29 +40,22 @@ def _wait(seconds: float) -> str:
 
 
 def cmd_inject(args: argparse.Namespace) -> int:
-    fault = FAULTS[args.fault]
-    if active := runs.open_runs():
-        print(f"A fault is already active ({active[0]['run_id']}). Run `python -m chaos clear` first.")
-        return 1
-
-    run = runs.start(fault, args.duration)
     try:
-        fault.inject(args.duration)
+        run = engine.inject(args.fault, args.duration)
+    except engine.FaultActive as exc:
+        print(f"{str(exc).capitalize()}. Run `python -m chaos clear` first.")
+        return 1
     except lab.LabError as exc:
         print(f"Injection failed: {exc}")
-        lab.clear_all()
-        runs.finish(run, "failed")
         return 1
-    print(f"Injected {fault.id} (run {run['run_id']})")
+    print(f"Injected {args.fault} (run {run['run_id']})")
 
     if args.detach:
         print("Detached. Revert with `python -m chaos clear`.")
         return 0
 
-    ended_by = _wait(args.duration)
-    for action in lab.clear_all():
+    for action in engine.revert(run, _wait(args.duration)):
         print(f"  {action}")
-    runs.finish(run, ended_by)
     print(f"Reverted. Ground truth: {runs.RUNS_DIR.name}/{run['run_id']}.json")
     return 0
 
