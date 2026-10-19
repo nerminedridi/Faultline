@@ -162,7 +162,7 @@ class Ollama:
 def from_env(provider: str | None = None, model: str | None = None):
     provider = provider or os.getenv("LLM_PROVIDER", "gemini")
     if provider == "gemini":
-        return Gemini(model or os.getenv("GEMINI_MODEL", "gemini-3.8-flash"), os.getenv("GEMINI_API_KEY", ""))
+        return Gemini(model or os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite"), os.getenv("GEMINI_API_KEY", ""))
     if provider == "ollama":
         return Ollama(model or os.getenv("OLLAMA_MODEL", "qwen3:4b"), os.getenv("OLLAMA_URL", "http://localhost:11434"))
     raise LLMError(f"unknown LLM_PROVIDER {provider!r} (use gemini or ollama)")

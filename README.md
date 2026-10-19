@@ -4,7 +4,7 @@
 
 An AI agent that investigates outages in a live microservice system and identifies the root cause, evaluated against faults injected on purpose, each with a known ground truth.
 
-> **Status:** all four milestones are built and measured: the agent finds the full root cause in 7/8 dev faults and 2/3 held-out faults (see [results](#results-so-far)).
+> **Status:** built and measured over 33 investigations: the agent finds the faulty service 94% of the time and the full root cause 64% of the time (see [results](#results)).
 
 ## How it works
 
@@ -137,7 +137,7 @@ python -m agent investigate --provider ollama   # local model instead
 
 The system prompt describes the architecture and a general method (follow the failure down the dependency chain, confirm the mechanism, rule out lookalikes) but says nothing about the specific faults. Each investigation saves its full transcript, diagnosis and token usage to `agent/reports/`.
 
-**Free models only.** The default is Google's Gemini free tier (`gemini-3.8-flash`, pinned so scores stay comparable); the agent retries automatically when it hits the free tier's rate limits. Ollama is supported for running fully offline, but on a CPU-only laptop a local model takes minutes per step.
+**Free models only.** The default is Google's Gemini free tier with `gemini-3.5-flash-lite` (pinned so scores stay comparable, and its daily allowance covers full scoreboard runs; `gemini-3.8-flash` allows only 20 requests a day); the agent retries automatically when it hits the free tier's rate limits. Ollama runs the agent fully offline (tested with `qwen3:4b`), but on a CPU-only laptop one model call takes many minutes.
 
 ## The scoreboard
 
@@ -154,21 +154,34 @@ Each trial waits until the lab is quiet (no alerts, no 5xx), injects the fault, 
 
 **Dev and holdout.** The 8 dev faults are what the agent is tuned against. The 3 held-out faults reuse known failure kinds in new places and are never looked at while tuning: they're only run at the end, so the final score measures whether the agent generalises rather than whether its prompt was fitted to the catalog.
 
-### Results so far
+### Results
 
-Model: `gemini-3.5-flash-lite` (free tier), one trial per fault, ~2–15 model calls per investigation.
+**Main run:** `gemini-3.5-flash-lite` (free tier), **3 trials per fault**, 33 investigations, ~2–10 model calls each.
 
-| | Service right | Fully right (service + kind) |
+| | Trials | Service right | Fully right (service + kind) |
+|---|---|---|---|
+| Dev faults | 24 | **96%** | **67%** |
+| **Held-out faults** (never seen while tuning) | 9 | **89%** | **56%** |
+| All | 33 | **94%** | **64%** |
+
+| Fault | Fully right | Typical mistake |
 |---|---|---|
-| Dev faults, baseline agent | 6/8 | 5/8 (62%) |
-| Dev faults, tuned agent | 7/8 | **7/8 (88%)** |
-| **Held-out faults** (never seen while tuning) | **3/3** | **2/3** |
+| `payments-latency`, `payments-errors`, `inventory-down`, `postgres-down` | 3/3 each | – |
+| `payments-down` *(held out)* | 3/3 | – |
+| `orders-db-pool-leak` | 2/3 | once blamed postgres |
+| `inventory-latency` *(held out)* | 2/3 | once blamed the gateway |
+| `inventory-hang` | 1/3 | calls a hang a crash |
+| `db-lock` | 1/3 | calls lock contention resource exhaustion |
+| `payments-declines` | 0/3 | right service, but "errors" instead of "bad-config" |
+| `postgres-hang` *(held out)* | 0/3 | right service, but "resource-exhaustion" instead of "hang" |
 
-Tuning fixed the baseline's hang-vs-crash and symptom-vs-cause mistakes. Remaining misses:
-- `payments-declines`: the decline rate jumps 2.4 → 91 per minute in the agent's own log summary, yet it reports "nothing abnormal" (with low confidence). Info-level spikes with no alert are its blind spot.
-- `postgres-hang` (held out): right service, but called resource-exhaustion rather than a hang.
+**What it shows.** The agent finds *where* the fault is almost every time (94%); naming *what kind* of fault is the weak spot, and the misses cluster on the subtle kinds (hang, lock contention, bad config) rather than on loud ones (crashes, errors). The held-out score is a little below the dev score, as an honest holdout should be.
 
-One trial per fault is a small sample; repeated runs (`--repeats`) and a comparison with a stronger model are next.
+**History.** One trial per fault first suggested 88% fully right on dev faults after tuning (from a 62% baseline); repeating every fault three times brought that down to 67%. Single runs flatter: the repeated numbers are the real ones.
+
+**Other models** (same agent, same faults):
+- `gemini-3.8-flash`: 2/2 fully right on held-out faults, investigating more thoroughly (5–11 model calls), before its free tier's **20 requests per day** ran out. Too few trials to compare properly yet.
+- `qwen3:4b` via **Ollama, fully offline** on a CPU-only laptop: diagnosed `inventory-down` correctly (inventory / crash, with a sensible causal chain), but one model call took **25 minutes**. It works; it isn't practical without a GPU.
 
 ## Tests
 
