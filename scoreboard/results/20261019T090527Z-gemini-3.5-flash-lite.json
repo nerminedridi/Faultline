@@ -1,0 +1,227 @@
+{
+  "started_at": "2026-10-19T09:05:27+00:00",
+  "provider": "gemini",
+  "model": "gemini-3.5-flash-lite",
+  "split": "custom",
+  "settings": {
+    "warmup_s": 90,
+    "cooldown_s": 150,
+    "max_steps": 15
+  },
+  "trials": [
+    {
+      "fault": "postgres-hang",
+      "run_id": "20261019T090532Z-postgres-hang",
+      "truth": {
+        "service": "postgres",
+        "kind": "hang"
+      },
+      "diagnosis": {
+        "evidence": [
+          "Metrics show db_pool_connections state=in_use is 10 (max) and state=waiting is 235.",
+          "Orders service logs show psycopg_pool.PoolTimeout: couldn't get a connection after 2.00 sec for all requests.",
+          "Gateway logs and traces show downstream errors from orders returning status 500/502."
+        ],
+        "confidence": "high",
+        "causal_chain": [
+          "postgres: database connections are fully utilized and blocked or leaked",
+          "orders: database connection pool is exhausted waiting for connections, leading to PoolTimeout errors",
+          "gateway: receives 500/502 errors from orders when customers attempt checkouts or order lookups"
+        ],
+        "summary": "The PostgreSQL database connection pool in the orders service is completely exhausted (10/10 connections in use with hundreds waiting), causing connection acquisition timeouts and failing all checkout and order retrieval requests.",
+        "service": "postgres",
+        "ruled_out": [
+          "inventory: inventory service logs show normal 200 responses and stock reservations succeeding.",
+          "payments: payments service is not being reached because requests fail at the database connection stage in orders before payment processing.",
+          "gateway: gateway is only returning 502/504 as a consequence of downstream failures in orders."
+        ],
+        "kind": "resource-exhaustion"
+      },
+      "service_ok": true,
+      "kind_ok": false,
+      "correct": false,
+      "tool_calls": 6,
+      "usage": {
+        "input_tokens": 33890,
+        "output_tokens": 440,
+        "llm_calls": 7
+      },
+      "duration_s": 16.2,
+      "transcript": [
+        {
+          "role": "user",
+          "text": "Page received at 2026-10-19 09:07:03 UTC: Something may be wrong with the shop. Check whether customers are affected.\nIncident window: since 09:04:32 UTC (2.5 min). Find the root cause of what is happening now.\n\n## Current alerts\n[firing] HighErrorRate service=gateway since 09:05:39Z: gateway 5xx rate is 48.16%\n[firing] HighErrorRate service=orders since 09:05:44Z: orders 5xx rate is 100%\n[firing] HighLatency service=orders since 09:05:44Z: orders p95 latency is 2.425s\n[firing] HighLatency service=gateway since 09:05:39Z: gateway p95 latency is 2.344s\n\n## Log lines since 09:04:32Z (2.5 min). Rates compare the first third of the window with the last third.\nWhat changed (rate rose or fell 3x or more, at any log level):\n  DOWN   165.6 -> 0.0   /min  orders  info  'request'  status=200\n    UP     0.0 -> 144.0 /min  gateway  error  'downstream error'  target=orders status=500\n    UP     0.0 -> 144.0 /min  gateway  error  'request'  status=502\n    UP     0.0 -> 144.0 /min  orders  error  'request'  status=500\n    UP     0.0 -> 144.0 /min  orders  error  'unhandled error'\n  DOWN   126.0 -> 0.0   /min  payments  info  'request'  status=200\n  DOWN   126.0 -> 0.0   /min  orders  info  'order paid'\n  DOWN     4.8 -> 0.0   /min  payments  info  'request'  status=402\n  DOWN     4.8 -> 0.0   /min  orders  info  'request'  status=402\n  DOWN     4.8 -> 0.0   /min  gateway  info  'request'  status=402\nAll groups:   count  per min (early -> late)  service  level  message  [fields]\n     864    291.6 -> 392.4    inventory  info  'request'  status=200\n     540    321.6 -> 147.6    gateway  info  'request'  status=200\n     209      0.0 -> 144.0    gateway  error  'downstream error'  target=orders status=500\n     209      0.0 -> 144.0    gateway  error  'request'  status=502\n     209      0.0 -> 144.0    orders  error  'request'  status=500\n     209      0.0 -> 144.0    orders  error  'unhandled error'\n     162    165.6 -> 0.0      orders  info  'request'  status=200\n     123    126.0 -> 0.0      orders  info  'order paid'\n     123    126.0 -> 0.0      payments  info  'request'  status=200\n       9      0.0 -> 0.0      gateway  error  'downstream timeout'  target=orders\n       9      0.0 -> 0.0      gateway  error  'request'  status=504\n       5      2.4 -> 1.2      loadgen  info  'traffic summary'\n       4      4.8 -> 0.0      payments  info  'card declined'\n       4      4.8 -> 0.0      gateway  info  'request'  status=402\n       4      4.8 -> 0.0      orders  info  'request'  status=402\n       4      4.8 -> 0.0      payments  info  'request'  status=402\n       2      1.2 -> 0.0      inventory  info  'restocked'"
+        },
+        {
+          "role": "assistant",
+          "text": "",
+          "tool_calls": [
+            {
+              "name": "search_logs",
+              "args": {
+                "service": "orders",
+                "level": "error"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "results": [
+            {
+              "name": "search_logs",
+              "result": "30 newest matching lines, oldest first:\n09:06:59.041 orders error 'unhandled error' request_id=00fcad4242da method=POST path=/orders\n    exception:     raise PoolTimeout( | psycopg_pool.PoolTimeout: couldn't get a connection after 2.00 sec\n09:06:59.043 orders error 'request' request_id=00fcad4242da method=POST path=/orders status=500 duration_ms=2017.4\n09:06:59.333 orders error 'unhandled error' request_id=4171951ff262 method=POST path=/orders\n    exception:     raise PoolTimeout( | psycopg_pool.PoolTimeout: couldn't get a connection after 2.00 sec\n09:06:59.334 orders error 'request' request_id=4171951ff262 method=POST path=/orders status=500 duration_ms=2009.9\n09:07:00.599 orders error 'unhandled error' request_id=75304fcd90f9 method=POST path=/orders\n    exception:     raise PoolTimeout( | psycopg_pool.PoolTimeout: couldn't get a connection after 2.00 sec\n09:07:00.602 orders error 'request' request_id=75304fcd90f9 method=POST path=/orders status=500 duration_ms=2024.0\n09:07:00.827 orders error 'unhandled error' request_id=8c2083416edb method=POST path=/orders\n    exception:     raise PoolTimeout( | psycopg_pool.PoolTimeout: couldn't get a connection after 2.00 sec\n09:07:00.828 orders error 'request' request_id=8c2083416edb method=POST path=/orders status=500 duration_ms=2011.4\n09:07:00.836 orders error 'unhandled error' request_id=032d274dff13 method=POST path=/orders\n    exception:     raise PoolTimeout( | psycopg_pool.PoolTimeout: couldn't get a connection after 2.00 sec\n09:07:00.837 orders error 'request' request_id=032d274dff13 method=POST path=/orders status=500 duration_ms=2008.6\n09:07:00.876 orders error 'unhandled error' request_id=d1d9be884c3f method=POST path=/orders\n    exception:     raise PoolTimeout( | psycopg_pool.PoolTimeout: couldn't get a connection after 2.00 sec\n09:07:00.878 orders error 'request' request_id=d1d9be884c3f method=POST path=/orders status=500 duration_ms=2017.4\n09:07:01.026 orders error 'unhandled error' request_id=ef070f0e54c3 method=POST path=/orders\n    exception:     raise PoolTimeout( | psycopg_pool.PoolTimeout: couldn't get a connection after 2.00 sec\n09:07:01.028 orders error 'request' request_id=ef070f0e54c3 method=POST path=/orders status=500 duration_ms=2018.8\n09:07:01.420 orders error 'unhandled error' request_id=ca4c9821709c method=POST path=/orders\n    exception:     raise PoolTimeout( | psycopg_pool.PoolTimeout: couldn't get a connection after 2.00 sec\n09:07:01.421 orders error 'request' request_id=ca4c9821709c method=POST path=/orders status=500 duration_ms=2015.7\n09:07:02.032 orders error 'unhandled error' request_id=cfbf14166257 method=POST path=/orders\n    exception:     raise PoolTimeout( | psycopg_pool.PoolTimeout: couldn't get a connection after 2.00 sec\n09:07:02.034 orders error 'request' request_id=cfbf14166257 method=POST path=/orders status=500 duration_ms=2015.5\n09:07:02.248 orders error 'unhandled error' request_id=29d6078651f9 method=POST path=/orders\n    exception:     raise PoolTimeout( | psycopg_pool.PoolTimeout: couldn't get a connection after 2.00 sec\n09:07:02.249 orders error 'request' request_id=29d6078651f9 method=POST path=/orders status=500 duration_ms=2016.1\n09:07:02.507 orders error 'unhandled error' request_id=1d9f1261cf7a method=POST path=/orders\n    exception:     raise PoolTimeout( | psycopg_pool.PoolTimeout: couldn't get a connection after 2.00 sec\n09:07:02.509 orders error 'request' request_id=1d9f1261cf7a method=POST path=/orders status=500 duration_ms=2016.7\n09:07:02.780 orders error 'unhandled error' request_id=7eff7a1cf47c method=GET path=/orders/52897\n    exception:     raise PoolTimeout( | psycopg_pool.PoolTimeout: couldn't get a connection after 2.00 sec\n09:07:02.783 orders error 'request' request_id=7eff7a1cf47c method=GET path=/orders/52897 status=500 duration_ms=2004.9\n09:07:03.126 orders error 'unhandled error' request_id=3122713b23d7 method=POST path=/orders\n    exception:     raise PoolTimeout( | psycopg_pool.PoolTimeout: couldn't get a connection after 2.00 sec\n09:07:03.128 orders error 'request' request_id=3122713b23d7 method=POST path=/orders status=500 duration_ms=2016.7\n09:07:03.866 orders error 'unhandled error' request_id=99d8a8728367 method=POST path=/orders\n    exception:     raise PoolTimeout( | psycopg_pool.PoolTimeout: couldn't get a connection after 2.00 sec\n09:07:03.868 orders error 'request' request_id=99d8a8728367 method=POST path=/orders status=500 duration_ms=2015.9\n09:07:03.910 orders error 'unhandled error' request_id=7cb092d4c7ef method=POST path=/orders\n    exception:     raise PoolTimeout( | psycopg_pool.PoolTimeout: couldn't get a connection after 2.00 sec\n09:07:03.911 orders error 'request' request_id=7cb092d4c7ef method=POST path=/orders status=500 duration_ms=2015.8"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "text": "",
+          "tool_calls": [
+            {
+              "name": "search_logs",
+              "args": {
+                "last_minutes": 5,
+                "service": "postgres"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "results": [
+            {
+              "name": "search_logs",
+              "result": "No matching log lines."
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "text": "",
+          "tool_calls": [
+            {
+              "name": "search_logs",
+              "args": {
+                "contains": "postgres",
+                "last_minutes": 5
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "results": [
+            {
+              "name": "search_logs",
+              "result": "No matching log lines."
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "text": "",
+          "tool_calls": [
+            {
+              "name": "search_logs",
+              "args": {
+                "service": "postgres",
+                "limit": 50
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "results": [
+            {
+              "name": "search_logs",
+              "result": "No matching log lines."
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "text": "",
+          "tool_calls": [
+            {
+              "name": "query_metrics",
+              "args": {
+                "promql": "db_pool_connections{service=\"orders\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "results": [
+            {
+              "name": "query_metrics",
+              "result": "db_pool_connections{service=\"orders\",state=\"max\"} = 10\ndb_pool_connections{service=\"orders\",state=\"in_use\"} = 10\ndb_pool_connections{service=\"orders\",state=\"waiting\"} = 235"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "text": "",
+          "tool_calls": [
+            {
+              "name": "trace_request",
+              "args": {
+                "request_id": "00fcad4242da"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "results": [
+            {
+              "name": "trace_request",
+              "result": "6 newest matching lines, oldest first:\n09:06:57.030 inventory info 'request' request_id=00fcad4242da method=POST path=/reserve status=200 duration_ms=1.2\n09:06:59.038 inventory info 'request' request_id=00fcad4242da method=POST path=/release status=200 duration_ms=1.5\n09:06:59.041 orders error 'unhandled error' request_id=00fcad4242da method=POST path=/orders\n    exception:     raise PoolTimeout( | psycopg_pool.PoolTimeout: couldn't get a connection after 2.00 sec\n09:06:59.043 orders error 'request' request_id=00fcad4242da method=POST path=/orders status=500 duration_ms=2017.4\n09:06:59.046 gateway error 'downstream error' request_id=00fcad4242da target=orders url=http://orders:8000/orders status=500\n09:06:59.046 gateway error 'request' request_id=00fcad4242da method=POST path=/api/checkout status=502 duration_ms=2026.4"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "text": "",
+          "tool_calls": [
+            {
+              "name": "submit_diagnosis",
+              "args": {
+                "evidence": [
+                  "Metrics show db_pool_connections state=in_use is 10 (max) and state=waiting is 235.",
+                  "Orders service logs show psycopg_pool.PoolTimeout: couldn't get a connection after 2.00 sec for all requests.",
+                  "Gateway logs and traces show downstream errors from orders returning status 500/502."
+                ],
+                "confidence": "high",
+                "causal_chain": [
+                  "postgres: database connections are fully utilized and blocked or leaked",
+                  "orders: database connection pool is exhausted waiting for connections, leading to PoolTimeout errors",
+                  "gateway: receives 500/502 errors from orders when customers attempt checkouts or order lookups"
+                ],
+                "summary": "The PostgreSQL database connection pool in the orders service is completely exhausted (10/10 connections in use with hundreds waiting), causing connection acquisition timeouts and failing all checkout and order retrieval requests.",
+                "service": "postgres",
+                "ruled_out": [
+                  "inventory: inventory service logs show normal 200 responses and stock reservations succeeding.",
+                  "payments: payments service is not being reached because requests fail at the database connection stage in orders before payment processing.",
+                  "gateway: gateway is only returning 502/504 as a consequence of downstream failures in orders."
+                ],
+                "kind": "resource-exhaustion"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "results": [
+            {
+              "name": "submit_diagnosis",
+              "result": "Diagnosis recorded."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
