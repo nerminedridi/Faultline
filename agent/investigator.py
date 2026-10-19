@@ -95,6 +95,8 @@ def _check_diagnosis(args: dict) -> str | None:
         return f"kind must be one of {tools.KINDS}"
     if not args.get("summary"):
         return "summary is required"
+    if args.get("confidence") not in ("low", "medium", "high"):
+        return "confidence must be low, medium or high"
     chain = [str(step) for step in args.get("causal_chain") or [] if str(step).strip()]
     if not chain:
         return "causal_chain is empty: trace the failure from the originating fault to the customer"

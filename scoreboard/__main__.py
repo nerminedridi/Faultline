@@ -11,6 +11,7 @@ Results are saved after every trial, so an interrupted run keeps what it finishe
 
 import argparse
 import json
+import re
 import sys
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -39,7 +40,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     provider = type(llm).__name__.lower()
     faults = _faults(args)
     started = datetime.now(timezone.utc)
-    path = RESULTS_DIR / f"{started:%Y%m%dT%H%M%SZ}-{llm.model}.json"
+    safe_model = re.sub(r"[^\w.-]", "-", llm.model)  # "qwen3:4b": colons aren't allowed in Windows file names
+    path = RESULTS_DIR / f"{started:%Y%m%dT%H%M%SZ}-{safe_model}.json"
     result = {
         "started_at": started.isoformat(timespec="seconds"),
         "provider": provider,
@@ -65,7 +67,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             break
         d = trial["diagnosis"]
         verdict = "CORRECT" if trial["correct"] else ("service ok, kind wrong" if trial["service_ok"] else "WRONG")
-        answer = f"{d['service']} / {d['kind']} ({d['confidence']})" if d else "no diagnosis"
+        answer = f"{d['service']} / {d['kind']} ({d.get('confidence', '?')})" if d else "no diagnosis"
         print(f"  -> {answer}: {verdict}")
         result["trials"].append(trial)
         path.write_text(json.dumps(result, indent=2, default=str) + "\n", encoding="utf-8", newline="\n")

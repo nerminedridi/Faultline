@@ -57,6 +57,11 @@ class InvestigatorTest(unittest.TestCase):
         self.assertEqual(report["diagnosis"]["service"], "payments")
         self.assertIn("chain starts at payments", report["transcript"][2]["results"][0]["result"])
 
+    def test_missing_confidence_is_sent_back(self):
+        no_confidence = {k: v for k, v in GOOD.items() if k != "confidence"}
+        llm = ScriptedLLM(call("submit_diagnosis", **no_confidence), call("submit_diagnosis", **GOOD))
+        self.assertEqual(investigate(llm)["diagnosis"]["confidence"], "high")
+
     def test_unknown_kind_is_sent_back(self):
         llm = ScriptedLLM(call("submit_diagnosis", **{**GOOD, "kind": "gremlins"}),
                           call("submit_diagnosis", **GOOD))
