@@ -142,6 +142,8 @@ class Ollama:
             "messages": messages,
             "tools": [{"type": "function", "function": t} for t in tools],
             "stream": False,
+            # Reasoning models (qwen3) think at length before answering: minutes per step on a CPU.
+            "think": os.getenv("OLLAMA_THINK", "false").lower() == "true",
             # Ollama's default context (a few thousand tokens) would silently cut off log dumps.
             "options": {"num_ctx": 32768},
         }

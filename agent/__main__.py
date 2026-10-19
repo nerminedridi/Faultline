@@ -11,6 +11,7 @@ GEMINI_API_KEY, GEMINI_MODEL, OLLAMA_MODEL, OLLAMA_URL.
 
 import argparse
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -22,12 +23,13 @@ DEFAULT_COMPLAINT = "Something may be wrong with the shop. Check whether custome
 
 
 def load_env(path: Path = ROOT / ".env") -> None:
-    """Minimal .env reader: KEY=value lines; real environment variables win."""
+    """Minimal .env reader: KEY=value lines, # comments; real environment variables win."""
     if not path.exists():
         return
     for line in path.read_text(encoding="utf-8-sig").splitlines():
         key, sep, value = line.strip().partition("=")
         if sep and not key.startswith("#"):
+            value = re.split(r"\s+#", value, maxsplit=1)[0]  # trailing "  # comment"
             os.environ.setdefault(key.strip(), value.strip().strip("'\""))
 
 
