@@ -59,7 +59,7 @@ def _post(url: str, body: dict, headers: dict, timeout: float, retries: int = 5)
                 raise LLMError(f"model API quota exhausted (retry in {wait / 3600:.1f} h): {detail[:300]}")
             print(f"  [{exc.code} from model API, retrying in {wait:.0f} s]", flush=True)
             time.sleep(wait)
-        except (urllib.error.URLError, TimeoutError) as exc:
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
             if attempt == retries:
                 raise LLMError(f"cannot reach {url.split('?')[0]}: {exc}") from exc
             time.sleep(2 ** (attempt + 1))

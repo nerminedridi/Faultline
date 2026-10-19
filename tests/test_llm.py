@@ -29,6 +29,13 @@ class RetryTest(unittest.TestCase):
             self.assertEqual(llm._post("https://x", {}, {}, timeout=1), {"ok": True})
         sleep.assert_called_once_with(8.0)
 
+    def test_dropped_connection_is_retried(self):
+        ok = mock.MagicMock()
+        ok.__enter__.return_value = io.BytesIO(b'{"ok": true}')
+        reset = ConnectionResetError(10054, "connection forcibly closed")
+        with mock.patch("urllib.request.urlopen", side_effect=[reset, ok]), mock.patch("time.sleep"):
+            self.assertEqual(llm._post("https://x", {}, {}, timeout=1), {"ok": True})
+
     def test_client_errors_are_not_retried(self):
         with mock.patch("urllib.request.urlopen", side_effect=http_error(400, "bad")) as urlopen:
             with self.assertRaises(llm.LLMError):
