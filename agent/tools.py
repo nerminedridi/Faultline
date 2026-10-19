@@ -149,6 +149,29 @@ def query_metrics(promql: str, over_time: bool = False) -> str:
     return _clip("\n".join(lines))
 
 
+def _describe(key: tuple) -> str:
+    m = dict(key)
+    extra = " ".join(f"{k}={m[k]}" for k in ("target", "status") if m.get(k))
+    return f"{m.get('service')}  {m.get('level')}  {m.get('msg')!r}  {extra}".rstrip()
+
+
+def _changes(early: dict, late: dict, minutes: float, factor: float = 3, floor: float = 3) -> list[str]:
+    """Groups whose per-minute rate rose or fell at least `factor`-fold, biggest change first.
+
+    Groups that stay under `floor` per minute in both thirds are background noise and skipped.
+    """
+    found = []
+    for key in early.keys() | late.keys():
+        before, after = early.get(key, 0) / minutes, late.get(key, 0) / minutes
+        if max(before, after) < floor:
+            continue
+        ratio = (after + 0.5) / (before + 0.5)  # +0.5 keeps 0 -> N finite
+        if ratio >= factor or ratio <= 1 / factor:
+            found.append((abs(ratio if ratio >= 1 else 1 / ratio), key, before, after))
+    return [f"  {'UP' if after > before else 'DOWN':>4}  {before:6.1f} -> {after:<6.1f}/min  {_describe(key)}"
+            for _, key, before, after in sorted(found, key=lambda f: -f[0])[:10]]
+
+
 def log_summary(service: str | None = None, last_minutes: int | None = None) -> str:
     end = time.time()
     start = _since(last_minutes)
@@ -168,16 +191,14 @@ def log_summary(service: str | None = None, last_minutes: int | None = None) -> 
     total = counts(seconds, end)
     third = max(1, seconds // 3)
     early, late = counts(third, start + third), counts(third, end)
-    lines = [
-        f"Log lines since {_hms(start)}Z ({seconds / 60:.1f} min), grouped. 'per min' is the rate in the "
-        f"first third of the window -> the last third.",
-        "   count  per min (early -> late)  service  level  message  [fields]",
-    ]
+    changed = _changes(early, late, third / 60)
+    lines = [f"Log lines since {_hms(start)}Z ({seconds / 60:.1f} min). Rates compare the first third "
+             f"of the window with the last third."]
+    lines += ["What changed (rate rose or fell 3x or more, at any log level):"] + (changed or ["  nothing"])
+    lines.append("All groups:   count  per min (early -> late)  service  level  message  [fields]")
     for key, n in sorted(total.items(), key=lambda kv: -kv[1])[:40]:
-        m = dict(key)
         trend = f"{early.get(key, 0) * 60 / third:7.1f} -> {late.get(key, 0) * 60 / third:<7.1f}"
-        extra = " ".join(f"{k}={m[k]}" for k in ("target", "status") if m.get(k))
-        lines.append(f"{int(n):>8}  {trend}  {m.get('service')}  {m.get('level')}  {m.get('msg')!r}  {extra}")
+        lines.append(f"{int(n):>8}  {trend}  {_describe(key)}")
 
     # Plain-text logs (postgres): sampled and grouped here, with numbers masked.
     raw = _get(LOKI, "/loki/api/v1/query_range", query=f'{_selector(service)} !~ "^\\\\{{"',

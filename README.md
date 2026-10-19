@@ -6,6 +6,25 @@ An AI agent that investigates outages in a live microservice system and identifi
 
 > **Status:** all four milestones are built and measured: the agent finds the full root cause in 7/8 dev faults and 2/3 held-out faults (see [results](#results-so-far)).
 
+## How it works
+
+```mermaid
+flowchart LR
+    subgraph lab["The lab (Docker)"]
+        shop["Online shop<br/>gateway · orders · inventory<br/>payments · postgres"]
+        obs["Prometheus · Loki<br/>alerts, metrics, logs"]
+        shop --> obs
+    end
+    chaos["Chaos engine<br/>injects 1 of 11 faults"] -->|breaks| shop
+    chaos -->|records| truth[("Ground truth<br/>service + kind")]
+    obs -->|"read-only tools,<br/>incident window only"| agent["AI agent<br/>(Gemini free tier)"]
+    agent --> diag["Diagnosis<br/>service, kind, causal chain,<br/>evidence, ruled out"]
+    diag --> score{"Scoreboard"}
+    truth --> score
+```
+
+The agent never sees the chaos engine or its records: only the telemetry an on-call engineer would see.
+
 ## The lab
 
 A small online shop that runs 24/7 under simulated customer traffic, monitored the way a production system would be.

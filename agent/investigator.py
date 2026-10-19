@@ -43,8 +43,9 @@ exist with no alert firing.
 ## Method
 1. The page comes with the current alerts and a log summary: start from those.
 2. Work out which services are affected and how (errors, latency, which status codes). Customer
-   impact is not only 5xx: compare every outcome against its normal level, and use the summary's
-   early -> late rates to see what changed during the window.
+   impact is not only 5xx: compare every outcome against its normal level. The summary's "What
+   changed" section lists every log line whose rate shifted sharply during the window, at any
+   level; each entry needs an explanation before you conclude.
 3. Follow the dependency chain downstream to the deepest component that is itself misbehaving,
    rather than just reacting to a failing dependency.
 4. Confirm the mechanism with direct evidence (specific log lines, metric values) before concluding.

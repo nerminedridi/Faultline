@@ -51,6 +51,27 @@ class FormattingTest(unittest.TestCase):
         self.assertEqual(tools._logql_string('say "hi" \\ bye'), '"say \\"hi\\" \\\\ bye"')
 
 
+class ChangesTest(unittest.TestCase):
+    DECLINES = (("level", "info"), ("msg", "card declined"), ("service", "payments"))
+    REQUESTS = (("level", "info"), ("msg", "request"), ("service", "gateway"), ("status", "200"))
+    ERRORS = (("level", "error"), ("msg", "request"), ("service", "orders"), ("status", "500"))
+
+    def test_an_info_level_spike_is_reported(self):
+        out = tools._changes({self.DECLINES: 2, self.REQUESTS: 270}, {self.DECLINES: 91, self.REQUESTS: 280}, 1)
+        self.assertEqual(len(out), 1)
+        self.assertIn("UP", out[0])
+        self.assertIn("'card declined'", out[0])
+
+    def test_a_new_error_and_a_drop_are_reported_biggest_first(self):
+        out = tools._changes({self.REQUESTS: 270}, {self.REQUESTS: 30, self.ERRORS: 240}, 1)
+        self.assertIn("'request'  status=500", out[0])
+        self.assertIn("DOWN", out[1])
+
+    def test_steady_traffic_and_rare_lines_are_not_changes(self):
+        rare = (("msg", "restocked"), ("service", "inventory"))
+        self.assertEqual(tools._changes({self.REQUESTS: 270, rare: 0}, {self.REQUESTS: 250, rare: 2}, 1), [])
+
+
 class RunTest(unittest.TestCase):
     def test_unknown_tool(self):
         self.assertIn("unknown tool", tools.run("rm_rf", {}))
